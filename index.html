@@ -84,6 +84,7 @@
   }
   .btn{padding:8px 14px; border:none; border-radius:8px; font-weight:700; font-size:13px; cursor:pointer; background:var(--black); color:var(--yellow);}
   .btn.secondary{background:var(--gray-100); color:var(--black);}
+  .table-wrap{overflow-x:auto; -webkit-overflow-scrolling:touch;}
   table{width:100%; border-collapse:collapse; font-size:13px;}
   th,td{padding:9px 8px; text-align:left; border-bottom:1px solid var(--gray-100); white-space:nowrap;}
   th{color:var(--gray-500); font-weight:700; font-size:11px; text-transform:uppercase;}
@@ -96,12 +97,13 @@
   .bar{width:100%; background:var(--yellow); border-radius:4px 4px 0 0; min-height:2px; position:relative;}
   .bar:hover{background:var(--yellow-dark);}
   .bar-label{font-size:9px; color:var(--gray-500); margin-top:4px;}
-  .cal{display:grid; grid-template-columns:repeat(7,1fr); gap:6px; margin-top:10px;}
+  .cal-wrap{overflow-x:auto; -webkit-overflow-scrolling:touch; margin-top:10px;}
+  .cal{display:grid; grid-template-columns:repeat(7,minmax(86px,1fr)); gap:6px;}
   .cal .dow{font-size:11px; color:var(--gray-500); text-align:center; font-weight:700; padding-bottom:4px;}
-  .cal-cell{min-height:78px; background:var(--white); border:1px solid var(--gray-200); border-radius:8px; padding:5px; font-size:11px;}
+  .cal-cell{min-height:78px; background:var(--white); border:1px solid var(--gray-200); border-radius:8px; padding:6px; font-size:11px;}
   .cal-cell.empty{background:transparent; border:none;}
-  .cal-date{font-weight:700; font-size:11px; color:var(--gray-700);}
-  .chip{display:block; margin-top:3px; padding:2px 5px; border-radius:5px; font-size:10px; font-weight:700; cursor:default;}
+  .cal-date{font-weight:700; font-size:11px; color:var(--gray-700); margin-bottom:4px;}
+  .chip{display:block; margin-top:5px; padding:3px 6px; border-radius:5px; font-size:10px; font-weight:700; cursor:default; white-space:normal; word-break:keep-all; line-height:1.35;}
   .chip.work{background:var(--green-bg); color:var(--green);}
   .chip.plan{background:var(--gray-100); color:var(--gray-700); border:1px dashed var(--gray-300);}
   .chip.off{background:var(--red-bg); color:var(--red);}
@@ -139,6 +141,28 @@
   .pin-pad{display:grid; grid-template-columns:repeat(3,1fr); gap:8px;}
   .pin-pad button{padding:14px 0; font-size:18px; font-weight:700; border:none; background:var(--gray-100); border-radius:10px; cursor:pointer;}
   small.hint{color:var(--gray-500); font-size:11px;}
+  .rec-list{margin-top:10px; padding-top:8px; border-top:1px solid var(--gray-100);}
+  .rec-row{display:flex; align-items:center; gap:8px; padding:6px 0; font-size:12px; border-bottom:1px solid var(--gray-100); flex-wrap:wrap;}
+  .rec-date{font-weight:800; width:38px; flex-shrink:0; color:var(--gray-700);}
+  .rec-times{color:var(--gray-700); flex:1; min-width:100px;}
+  .rec-row .badge{margin-top:0;}
+  .rec-empty{font-size:12px; color:var(--gray-500); margin-top:8px;}
+
+  @media (max-width: 480px){
+    header{padding:14px 14px;}
+    header .title{font-size:14px; gap:7px;}
+    header .sub{font-size:10px;}
+    #adminBtn{padding:7px 11px; font-size:11px;}
+    nav{padding:9px 10px; gap:5px;}
+    nav button{padding:8px 11px; font-size:12px;}
+    main{padding:12px; padding-bottom:60px;}
+    .emp-name{font-size:15px; word-break:keep-all;}
+    .emp-meta{word-break:keep-all;}
+    .emp-grid{grid-template-columns:1fr;}
+    .row{gap:8px;}
+    .rec-row{font-size:11px;}
+    .dayoff-row{flex-wrap:wrap;}
+  }
 </style>
 </head>
 <body>
@@ -312,6 +336,27 @@ function renderMain(){
   bindTabEvents();
 }
 
+/* ---- 이번달 출퇴근 기록 누적 리스트 (출퇴근 체크 탭, 직원 카드 하단) ---- */
+function renderEmpMonthList(emp){
+  const nowMonth = monthKey(new Date());
+  const today = todayStr();
+  const rows = Object.values(state.attendance)
+    .filter(r => r.employee_id===emp.id && r.work_date && r.work_date.startsWith(nowMonth) && r.work_date <= today)
+    .sort((a,b)=> b.work_date < a.work_date ? -1 : (b.work_date > a.work_date ? 1 : 0));
+  if(rows.length===0) return `<p class="rec-empty">이번 달 기록이 아직 없어요.</p>`;
+  const items = rows.map(r=>{
+    const st = computeStatus(emp, r.work_date, r);
+    const md = r.work_date.slice(5).replace('-', '/');
+    return `<div class="rec-row">
+      <div class="rec-date">${md}</div>
+      <div class="rec-times">${r.is_off? '휴무' : `${fmtTime(r.clock_in)} · ${fmtTime(r.clock_out)}`}</div>
+      <span class="badge ${st.cls}">${st.label}</span>
+      ${state.isAdmin? `<button class="mini-btn" data-quick-edit="${emp.id}" data-quick-date="${r.work_date}">✎ 수정</button>`:''}
+    </div>`;
+  }).join('');
+  return `<div class="rec-list"><div class="mini-btn" style="cursor:default; color:var(--gray-500); margin-bottom:2px;">이번 달 기록 (${rows.length})</div>${items}</div>`;
+}
+
 /* ---- 탭 1: 출퇴근 체크 ---- */
 function renderClock(){
   const today = todayStr();
@@ -340,6 +385,7 @@ function renderClock(){
         <button class="mini-btn" data-quick-edit="${emp.id}" data-quick-date="${today}">✎ 출퇴근시간 수정</button>
         <button class="mini-btn" data-edit-info="${emp.id}">✎ 직원정보 수정</button>
       </div>`:''}
+      ${renderEmpMonthList(emp)}
     </div>`;
   }).join('');
   return `${state.isAdmin? `<div class="row" style="margin-bottom:14px;">
@@ -386,8 +432,8 @@ function renderToday(){
         ${state.isAdmin? `<button class="btn secondary" id="addRecordBtn2">+ 근무기록 추가</button>`:''}
       </div>
     </div>
-    <table><thead><tr><th>직원</th><th>근무 지점</th><th>출근</th><th>퇴근</th><th>근무시간</th><th>상태</th>${state.isAdmin?'<th></th>':''}</tr></thead>
-    <tbody>${rows}</tbody></table>
+    <div class="table-wrap"><table><thead><tr><th>직원</th><th>근무 지점</th><th>출근</th><th>퇴근</th><th>근무시간</th><th>상태</th>${state.isAdmin?'<th></th>':''}</tr></thead>
+    <tbody>${rows}</tbody></table></div>
   </div>`;
 }
 
@@ -450,8 +496,8 @@ function renderHours(){
   </div>
   <div class="card">
     <h2>직원별 요약</h2>
-    <table><thead><tr><th>직원</th><th>근무일수</th><th>총 근무시간</th><th>지각</th><th>휴무</th></tr></thead>
-    <tbody>${perEmpRows || '<tr><td colspan="5" style="color:var(--gray-500)">데이터 없음</td></tr>'}</tbody></table>
+    <div class="table-wrap"><table><thead><tr><th>직원</th><th>근무일수</th><th>총 근무시간</th><th>지각</th><th>휴무</th></tr></thead>
+    <tbody>${perEmpRows || '<tr><td colspan="5" style="color:var(--gray-500)">데이터 없음</td></tr>'}</tbody></table></div>
   </div>`;
 }
 
@@ -489,7 +535,7 @@ function renderSchedule(){
         <button class="btn secondary" id="nextMonth">다음달 ›</button>
       </div>
     </div>
-    <div class="cal">${DOW.map(d=>`<div class="dow">${d}</div>`).join('')}${cells.join('')}</div>
+    <div class="cal-wrap"><div class="cal">${DOW.map(d=>`<div class="dow">${d}</div>`).join('')}${cells.join('')}</div></div>
     <p style="font-size:11px; color:var(--gray-500); margin-top:10px;">
       <span class="chip work" style="display:inline-block;">근무</span>
       <span class="chip off" style="display:inline-block;">휴무</span>
