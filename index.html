@@ -74,6 +74,9 @@
   .action-btn.in{background:var(--black); color:var(--yellow);}
   .action-btn.out{background:var(--yellow); color:var(--black);}
   .action-btn:disabled{background:var(--gray-200); color:var(--gray-500); cursor:not-allowed;}
+  .action-row{display:flex; gap:8px; margin-top:12px;}
+  .action-row .action-btn{margin-top:0;}
+  .action-btn.undo{background:var(--gray-100); color:var(--gray-700); flex:0 0 auto; width:auto; padding:12px 16px;}
   h2{font-size:15px; margin:0 0 12px;}
   .row{display:flex; gap:10px; align-items:center; flex-wrap:wrap;}
   select, input[type=date], input[type=text], input[type=time], input[type=password], input[type=number]{
@@ -123,7 +126,9 @@
   .modal label{display:block; font-size:12px; color:var(--gray-500); margin-bottom:4px; font-weight:700;}
   .modal input, .modal select{width:100%;}
   .modal-actions{display:flex; gap:8px; margin-top:16px;}
-  .modal-actions button{flex:1;}
+  .modal-actions button{flex:1; min-width:0; height:44px; box-sizing:border-box; display:flex; align-items:center; justify-content:center; text-align:center; margin:0;}
+  .btn-delete{display:block; width:100%; margin-top:14px; padding:10px; border:1px solid var(--red); background:var(--white); color:var(--red); border-radius:8px; font-weight:700; font-size:13px; cursor:pointer; text-align:center;}
+  .btn-delete:hover{background:var(--red-bg);}
   .empty-state{text-align:center; color:var(--gray-500); padding:40px 10px; font-size:13px;}
   .setup-wrap{max-width:520px; margin:60px auto; padding:0 16px;}
   .live-dot{width:7px;height:7px;border-radius:50%;background:var(--green); display:inline-block; margin-right:5px; box-shadow:0 0 0 3px var(--green-bg);}
@@ -211,6 +216,18 @@ async function upsertAttendance(row){
 }
 
 function getAttendance(empId, date){ return state.attendance[keyOf(empId, date)] || null; }
+
+async function deleteAttendance(empId, date){
+  try{
+    const docId = empId + '_' + date;
+    await db.collection('attendance').doc(docId).delete();
+    delete state.attendance[keyOf(empId, date)];
+    return true;
+  } catch(err){
+    alert('삭제 실패: '+err.message);
+    return false;
+  }
+}
 
 /* ============ 출퇴근 상태 계산 ============ */
 function computeStatus(emp, date, rec){
@@ -315,7 +332,10 @@ function renderClock(){
         ? `<button class="action-btn in" data-act="in" data-emp="${emp.id}">출근하기</button>`
         : canOut
           ? `<button class="action-btn out" data-act="out" data-emp="${emp.id}">퇴근하기</button>`
-          : `<button class="action-btn" disabled>오늘 근무 완료</button>`}
+          : `<div class="action-row">
+              <button class="action-btn" disabled>오늘 근무 완료</button>
+              <button class="action-btn undo" data-act="undo_out" data-emp="${emp.id}">되돌리기</button>
+            </div>`}
       ${state.isAdmin? `<div class="row" style="gap:12px;">
         <button class="mini-btn" data-quick-edit="${emp.id}" data-quick-date="${today}">✎ 출퇴근시간 수정</button>
         <button class="mini-btn" data-edit-info="${emp.id}">✎ 직원정보 수정</button>
@@ -451,7 +471,7 @@ function renderSchedule(){
     const chips = state.employees.filter(e=>e.active).map(emp=>{
       const rec = getAttendance(emp.id, dateStr);
       const cls = dayState(rec);
-      const label = emp.name;
+      const label = cls==='off' ? `${emp.name} · 휴무` : emp.name;
       const adminCls = state.isAdmin ? 'admin':'';
       return `<span class="chip ${cls} ${adminCls}" data-chip-emp="${emp.id}" data-chip-date="${dateStr}" title="${emp.name} — 클릭하면 미정/근무/휴무 순으로 전환">${label}</span>`;
     }).join('');
@@ -561,6 +581,9 @@ async function doClock(empId, action){
   const now = new Date().toISOString();
   if(action==='in'){
     await upsertAttendance({ employee_id: empId, work_date: today, clock_in: now, is_off:false });
+  } else if(action==='undo_out'){
+    // 퇴근 처리를 취소하고 "출근완료(근무중)" 이전 단계로 되돌림
+    await upsertAttendance({ employee_id: empId, work_date: today, clock_out: null });
   } else {
     const rec = getAttendance(empId, today);
     await upsertAttendance({ employee_id: empId, work_date: today, clock_in: rec?rec.clock_in:now, clock_out: now });
@@ -641,6 +664,7 @@ function openEmployeeModal(empId){
       <div style="flex:1;"><label>기준 퇴근</label><input id="f_end" type="time" value="${emp? (emp.standard_end||'19:00') : '19:00'}"></div>
     </div>
     <div class="row"><div style="flex:1;"><label>PIN (선택, 4자리)</label><input id="f_pin" type="text" maxlength="4" placeholder="비워두면 PIN 없이 체크" value="${emp? (emp.pin||''):''}"></div></div>
+    ${editing? `<button class="btn-delete" id="empDelete">🗑 이 직원 삭제</button>` : ''}
     <div class="modal-actions">
       <button class="btn secondary" id="empCancel">취소</button>
       <button class="btn" id="empSave">저장</button>
@@ -648,6 +672,19 @@ function openEmployeeModal(empId){
   </div></div>`;
   document.body.insertAdjacentHTML('beforeend', html);
   document.getElementById('empCancel').onclick = ()=> document.getElementById('empBg').remove();
+  if(editing){
+    document.getElementById('empDelete').onclick = async ()=>{
+      if(!confirm(`정말 "${emp.name}" 직원을 삭제할까요? 근태 기록은 남아있지만 직원 목록에서는 사라져요.`)) return;
+      try{
+        await db.collection('employees').doc(empId).delete();
+      } catch(err){
+        alert('삭제 실패: '+err.message); return;
+      }
+      document.getElementById('empBg').remove();
+      await loadEmployees();
+      renderMain();
+    };
+  }
   document.getElementById('empSave').onclick = async ()=>{
     const name = document.getElementById('f_name').value.trim();
     if(!name){ alert('이름을 입력해주세요'); return; }
@@ -677,7 +714,8 @@ function openEmployeeModal(empId){
 
 function openEditModal(empId, date){
   const emp = state.employees.find(e=>e.id===empId);
-  const rec = getAttendance(empId, date) || {};
+  const existingRec = getAttendance(empId, date);
+  const rec = existingRec || {};
   const html = `<div class="modal-bg" id="editBg"><div class="modal">
     <h3>${emp.name} · ${date} 기록 수정</h3>
     <div class="row">
@@ -689,6 +727,7 @@ function openEditModal(empId, date){
       <label><input type="checkbox" id="e_off" ${rec.is_off?'checked':''}> 이 날 휴무로 지정</label>
     </div></div>
     <div class="row"><div style="flex:1;"><label>메모</label><input id="e_note" type="text" value="${rec.note||''}"></div></div>
+    ${existingRec? `<button class="btn-delete" id="editDelete">🗑 이 날 기록 삭제</button>` : ''}
     <div class="modal-actions">
       <button class="btn secondary" id="editCancel">취소</button>
       <button class="btn" id="editSave">저장</button>
@@ -696,6 +735,13 @@ function openEditModal(empId, date){
   </div></div>`;
   document.body.insertAdjacentHTML('beforeend', html);
   document.getElementById('editCancel').onclick = ()=> document.getElementById('editBg').remove();
+  if(existingRec){
+    document.getElementById('editDelete').onclick = async ()=>{
+      if(!confirm('정말 이 날짜의 근무 기록을 삭제할까요? 되돌릴 수 없어요.')) return;
+      const ok = await deleteAttendance(empId, date);
+      if(ok){ document.getElementById('editBg').remove(); renderMain(); }
+    };
+  }
   document.getElementById('editSave').onclick = async ()=>{
     const inVal = document.getElementById('e_in').value;
     const outVal = document.getElementById('e_out').value;
@@ -733,6 +779,7 @@ function openAddRecordModal(presetEmpId, presetDate){
     </div></div>
     <div class="row"><div style="flex:1;"><label>메모</label><input id="ar_note" type="text" placeholder="예: 대타 근무"></div></div>
     <small class="hint" id="ar_hint"></small>
+    <button class="btn-delete" id="arDelete" style="display:none;">🗑 이 근무 기록 삭제</button>
     <div class="modal-actions">
       <button class="btn secondary" id="arCancel">취소</button>
       <button class="btn" id="arSave">저장</button>
@@ -751,10 +798,19 @@ function openAddRecordModal(presetEmpId, presetDate){
     document.getElementById('ar_note').value = (rec && rec.note) || '';
     document.getElementById('ar_store').value = (rec && rec.work_store) || (emp && emp.store) || '';
     document.getElementById('ar_hint').textContent = rec? '이미 기록이 있어서 불러왔어요. 저장하면 덮어씁니다.' : '해당 직원·날짜에 기존 기록이 없어요. 새로 추가돼요.';
+    document.getElementById('arDelete').style.display = rec? 'block' : 'none';
   };
   document.getElementById('ar_emp').onchange = fillExisting;
   document.getElementById('ar_date').onchange = fillExisting;
   fillExisting();
+
+  document.getElementById('arDelete').onclick = async ()=>{
+    const empId = document.getElementById('ar_emp').value;
+    const date = document.getElementById('ar_date').value;
+    if(!confirm('정말 이 근무 기록을 삭제할까요? 되돌릴 수 없어요.')) return;
+    const ok = await deleteAttendance(empId, date);
+    if(ok){ document.getElementById('addRecBg').remove(); renderMain(); }
+  };
 
   document.getElementById('arCancel').onclick = ()=> document.getElementById('addRecBg').remove();
   document.getElementById('arSave').onclick = async ()=>{
