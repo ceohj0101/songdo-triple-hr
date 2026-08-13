@@ -342,7 +342,10 @@ function renderClock(){
       </div>`:''}
     </div>`;
   }).join('');
-  return `<div class="grid emp-grid">${cards}</div>
+  return `${state.isAdmin? `<div class="row" style="margin-bottom:14px;">
+      <button class="btn" id="addEmpBtnTop">+ 근무자 추가</button>
+    </div>`:''}
+    <div class="grid emp-grid">${cards}</div>
     ${state.isAdmin? `<div class="row" style="margin-top:14px;">
       <button class="btn secondary" id="addEmpBtn">+ 직원 추가</button>
       <button class="btn secondary" id="addRecordBtn">+ 근무기록 추가</button>
@@ -503,6 +506,7 @@ function bindTabEvents(){
     btn.onclick = () => handleClock(btn.dataset.emp, btn.dataset.act);
   });
   document.getElementById('addEmpBtn') && (document.getElementById('addEmpBtn').onclick = openEmployeeModal);
+  document.getElementById('addEmpBtnTop') && (document.getElementById('addEmpBtnTop').onclick = openEmployeeModal);
   document.getElementById('addRecordBtn') && (document.getElementById('addRecordBtn').onclick = ()=> openAddRecordModal());
   document.getElementById('addRecordBtn2') && (document.getElementById('addRecordBtn2').onclick = ()=> openAddRecordModal(null, state.todayDate||todayStr()));
   document.querySelectorAll('[data-quick-edit]').forEach(btn=>{
@@ -923,6 +927,9 @@ async function boot(){
     }
     firebase.initializeApp(FIREBASE_CONFIG);
     db = firebase.firestore();
+    // 카카오톡 인앱 브라우저 등 일부 모바일 브라우저에서 저장/삭제 시
+    // "n.indexOf is not a function" 오류가 나는 문제 방지 (IndexedDB/스트리밍 연결 제한 우회)
+    try{ db.settings({ experimentalAutoDetectLongPolling: true }); }catch(e){ console.warn('firestore settings 적용 실패', e); }
     await loadEmployees();
     const start = state.hoursRange.start, end = fmtDate(new Date(new Date().getFullYear(), new Date().getMonth()+1, 0));
     await loadAttendanceRange(start < todayStr() ? start : todayStr(), end);
