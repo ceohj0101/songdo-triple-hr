@@ -103,6 +103,891 @@
   .chip.plan{background:var(--gray-100); color:var(--gray-700); border:1px dashed var(--gray-300);}
   .chip.off{background:var(--red-bg); color:var(--red);}
   .chip.admin{cursor:pointer;}
+  .cal-date.admin{cursor:pointer;}
+  .cal-date.admin:hover{color:var(--blue); text-decoration:underline;}
+  .mini-btn{border:none; background:none; color:var(--blue); font-size:11px; font-weight:700; cursor:pointer; padding:0; margin-top:6px;}
+  .check-list{max-height:320px; overflow-y:auto; margin-top:4px;}
+  .check-list label{display:flex; align-items:center; gap:8px; padding:7px 2px; font-size:13px; border-bottom:1px solid var(--gray-100);}
+  .dayoff-row{display:flex; align-items:center; justify-content:space-between; gap:10px; padding:9px 2px; border-bottom:1px solid var(--gray-100);}
+  .dayoff-name{font-size:13px; font-weight:700; flex:1;}
+  .seg{display:flex; border:1px solid var(--gray-300); border-radius:8px; overflow:hidden; flex-shrink:0;}
+  .seg button{border:none; background:var(--white); padding:6px 10px; font-size:11px; font-weight:700; cursor:pointer; color:var(--gray-700);}
+  .seg button+button{border-left:1px solid var(--gray-300);}
+  .seg button.sel{background:var(--gray-700); color:var(--white);}
+  .seg button.sel.work{background:var(--green); color:var(--white);}
+  .seg button.sel.off{background:var(--red); color:var(--white);}
+  .modal-bg{position:fixed; inset:0; background:rgba(0,0,0,.45); display:flex; align-items:center; justify-content:center; z-index:50; padding:16px;}
+  .modal{background:var(--white); border-radius:var(--radius); padding:20px; width:100%; max-width:360px;}
+  .modal h3{margin:0 0 14px; font-size:15px;}
+  .modal .row{margin-bottom:10px;}
+  .modal label{display:block; font-size:12px; color:var(--gray-500); margin-bottom:4px; font-weight:700;}
+  .modal input, .modal select{width:100%;}
+  .modal-actions{display:flex; gap:8px; margin-top:16px;}
+  .modal-actions button{flex:1;}
+  .empty-state{text-align:center; color:var(--gray-500); padding:40px 10px; font-size:13px;}
+  .setup-wrap{max-width:520px; margin:60px auto; padding:0 16px;}
+  .live-dot{width:7px;height:7px;border-radius:50%;background:var(--green); display:inline-block; margin-right:5px; box-shadow:0 0 0 3px var(--green-bg);}
+  footer{text-align:center; font-size:11px; color:var(--gray-300); padding:20px;}
+  .pin-dots{display:flex; gap:10px; justify-content:center; margin:16px 0;}
+  .pin-dots span{width:14px; height:14px; border-radius:50%; border:2px solid var(--gray-300);}
+  .pin-dots span.filled{background:var(--black); border-color:var(--black);}
+  .pin-pad{display:grid; grid-template-columns:repeat(3,1fr); gap:8px;}
+  .pin-pad button{padding:14px 0; font-size:18px; font-weight:700; border:none; background:var(--gray-100); border-radius:10px; cursor:pointer;}
+  small.hint{color:var(--gray-500); font-size:11px;}
+</style>
+</head>
+<body>
+
+<div id="app"></div>
+
+<script>
+/* ============ 설정 (Firebase 프로젝트: songdo-triple-hr) ============ */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyDmeRkB7LXQ82Nvev2bLHFsUNchV5BuAF4",
+  authDomain: "songdo-triple-hr.firebaseapp.com",
+  projectId: "songdo-triple-hr",
+  storageBucket: "songdo-triple-hr.firebasestorage.app",
+  messagingSenderId: "624425244263",
+  appId: "1:624425244263:web:0817555fbb57e5d62de6c2"
+};
+const ADMIN_PASSWORD = '0000'; // 사장님 관리자 모드 비밀번호 - 꼭 바꿔서 사용하세요
+/* ================================================================================ */
+
+const DOW = ['일','월','화','수','목','금','토'];
+
+let db = null;
+let state = {
+  employees: [],
+  attendance: {},      // key: employeeId|YYYY-MM-DD -> row
+  tab: 'clock',
+  isAdmin: false,
+  hoursRange: { start: monthStart(new Date()), end: todayStr(), empId: 'all' },
+  scheduleMonth: monthKey(new Date()),
+  pinModal: null,       // { employeeId, action }
+  pinBuffer: ''
+};
+
+function todayStr(d=new Date()){ return fmtDate(d); }
+function fmtDate(d){ const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), day=String(d.getDate()).padStart(2,'0'); return `${y}-${m}-${day}`; }
+function monthStart(d){ return fmtDate(new Date(d.getFullYear(), d.getMonth(), 1)); }
+function monthKey(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; }
+function fmtTime(iso){ if(!iso) return '-'; const d=new Date(iso); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; }
+function fmtHM(mins){ if(mins==null) return '-'; const h=Math.floor(mins/60), m=Math.round(mins%60); return `${h}시간 ${m}분`; }
+function keyOf(empId, date){ return empId+'|'+date; }
+
+function isConfigured(){
+  return FIREBASE_CONFIG.apiKey && !FIREBASE_CONFIG.apiKey.startsWith('YOUR_');
+}
+
+/* ============ 데이터 로딩 (Firebase Firestore) ============ */
+async function loadEmployees(){
+  const snap = await db.collection('employees').orderBy('created_at').get();
+  state.employees = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+}
+
+async function loadAttendanceRange(start, end){
+  const snap = await db.collection('attendance')
+    .where('work_date', '>=', start).where('work_date', '<=', end).get();
+  snap.docs.forEach(d => {
+    const r = { id: d.id, ...d.data() };
+    state.attendance[keyOf(r.employee_id, r.work_date)] = r;
+  });
+}
+
+async function upsertAttendance(row){
+  try{
+    const docId = row.employee_id + '_' + row.work_date;
+    await db.collection('attendance').doc(docId).set({
+      ...row,
+      updated_at: new Date().toISOString()
+    }, { merge: true });
+    const saved = { id: docId, ...(getAttendance(row.employee_id, row.work_date)||{}), ...row };
+    state.attendance[keyOf(row.employee_id, row.work_date)] = saved;
+    return saved;
+  } catch(err){
+    alert('저장 실패: '+err.message);
+    return null;
+  }
+}
+
+function getAttendance(empId, date){ return state.attendance[keyOf(empId, date)] || null; }
+
+/* ============ 출퇴근 상태 계산 ============ */
+function computeStatus(emp, date, rec){
+  const today = todayStr();
+  if(rec && rec.is_off) return { label:'휴무', cls:'off' };
+  if(!rec || !rec.clock_in){
+    if(date < today) return { label:'결근', cls:'absent' };
+    if(date > today) return { label:'예정', cls:'before' };
+    return { label:'출근 전', cls:'before' };
+  }
+  const inD = new Date(rec.clock_in);
+  const [sh,sm] = (emp.standard_start||'10:30').split(':').map(Number);
+  const stdIn = new Date(inD); stdIn.setHours(sh,sm,0,0);
+  const late = (inD - stdIn) > 10*60*1000;
+
+  if(!rec.clock_out){
+    return { label: late? '근무중 (지각)':'근무중', cls: late? 'late':'working' };
+  }
+  const outD = new Date(rec.clock_out);
+  const [eh,em] = (emp.standard_end||'19:00').split(':').map(Number);
+  const stdOut = new Date(outD); stdOut.setHours(eh,em,0,0);
+  const early = (stdOut - outD) > 10*60*1000;
+  let label = '퇴근완료';
+  if(late && early) label = '퇴근완료 (지각·조퇴)';
+  else if(late) label = '퇴근완료 (지각)';
+  else if(early) label = '퇴근완료 (조퇴)';
+  return { label, cls: (late||early)? 'late':'done' };
+}
+
+function workMinutes(rec){
+  if(!rec || !rec.clock_in || !rec.clock_out) return null;
+  return (new Date(rec.clock_out) - new Date(rec.clock_in)) / 60000;
+}
+
+/* ============ 렌더링 ============ */
+function render(){
+  const app = document.getElementById('app');
+  if(!isConfigured()){ app.innerHTML = renderSetup(); return; }
+  app.innerHTML = `
+    <header>
+      <div>
+        <div class="title"><span class="dot"></span>위베이프 출퇴근·근태관리</div>
+        <div class="sub"><span class="live-dot"></span>실시간 연동 중 · ${new Date().toLocaleDateString('ko-KR',{month:'long',day:'numeric',weekday:'short'})}</div>
+      </div>
+      <button id="adminBtn" class="${state.isAdmin?'on':''}">${state.isAdmin? '관리자 모드 ON':'관리자 모드'}</button>
+    </header>
+    <nav>
+      <button data-tab="clock" class="${tabCls('clock')}">출퇴근 체크</button>
+      <button data-tab="today" class="${tabCls('today')}">오늘 근태</button>
+      <button data-tab="hours" class="${tabCls('hours')}">기간별 근무시간</button>
+      <button data-tab="schedule" class="${tabCls('schedule')}">월간 스케줄</button>
+    </nav>
+    <main id="main"></main>
+    <footer>Wevape HR · Firebase 실시간 동기화</footer>
+  `;
+  document.getElementById('adminBtn').onclick = onAdminToggle;
+  document.querySelectorAll('nav button').forEach(b => b.onclick = () => { state.tab = b.dataset.tab; renderMain(); });
+  renderMain();
+}
+
+function tabCls(t){ return state.tab===t ? 'active':''; }
+
+function renderSetup(){
+  return `<div class="setup-wrap"><div class="card">
+    <h2 style="font-size:18px;">⚙️ 처음 설정이 필요해요</h2>
+    <p style="font-size:13px; color:var(--gray-700); line-height:1.6;">
+      이 앱은 Firebase(무료 데이터베이스)를 통해 사장님과 직원이 실시간으로 데이터를 공유합니다.<br><br>
+      이 파일(index.html) 맨 위 FIREBASE_CONFIG 값이 비어있거나 잘못된 것 같아요.<br>
+      Firebase 콘솔 &gt; 프로젝트 설정 &gt; 내 앱에서 설정값을 다시 확인해주세요.
+    </p>
+    <small class="hint">함께 받으신 README 파일에 단계별 안내가 있습니다.</small>
+  </div></div>`;
+}
+
+function renderMain(){
+  const main = document.getElementById('main');
+  if(!main) return;
+  if(state.tab==='clock') main.innerHTML = renderClock();
+  if(state.tab==='today') main.innerHTML = renderToday();
+  if(state.tab==='hours') main.innerHTML = renderHours();
+  if(state.tab==='schedule') main.innerHTML = renderSchedule();
+  bindTabEvents();
+}
+
+/* ---- 탭 1: 출퇴근 체크 ---- */
+function renderClock(){
+  const today = todayStr();
+  if(state.employees.length===0) return emptyEmployees();
+  const cards = state.employees.filter(e=>e.active).map(emp=>{
+    const rec = getAttendance(emp.id, today);
+    const st = computeStatus(emp, today, rec);
+    const canIn = !rec || !rec.clock_in;
+    const canOut = rec && rec.clock_in && !rec.clock_out;
+    const off = rec && rec.is_off;
+    return `<div class="card emp-card" data-emp="${emp.id}">
+      <div class="emp-name">${emp.name}</div>
+      <div class="emp-meta">${emp.store||''} ${emp.affiliation? '· '+emp.affiliation:''}</div>
+      ${emp.trainer? `<div class="emp-meta">교육자: ${emp.trainer}</div>` : ''}
+      <span class="badge ${st.cls}">${st.label}</span>
+      <div class="times">출근 ${fmtTime(rec&&rec.clock_in)} · 퇴근 ${fmtTime(rec&&rec.clock_out)}</div>
+      ${off ? '' : canIn
+        ? `<button class="action-btn in" data-act="in" data-emp="${emp.id}">출근하기</button>`
+        : canOut
+          ? `<button class="action-btn out" data-act="out" data-emp="${emp.id}">퇴근하기</button>`
+          : `<button class="action-btn" disabled>오늘 근무 완료</button>`}
+      ${state.isAdmin? `<div class="row" style="gap:12px;">
+        <button class="mini-btn" data-quick-edit="${emp.id}" data-quick-date="${today}">✎ 출퇴근시간 수정</button>
+        <button class="mini-btn" data-edit-info="${emp.id}">✎ 직원정보 수정</button>
+      </div>`:''}
+    </div>`;
+  }).join('');
+  return `<div class="grid emp-grid">${cards}</div>
+    ${state.isAdmin? `<div class="row" style="margin-top:14px;">
+      <button class="btn secondary" id="addEmpBtn">+ 직원 추가</button>
+      <button class="btn secondary" id="addRecordBtn">+ 근무기록 추가</button>
+    </div>`:''}`;
+}
+
+function emptyEmployees(){
+  return `<div class="card empty-state">아직 등록된 직원이 없어요.<br>
+    ${state.isAdmin? `<button class="btn" id="addEmpBtn" style="margin-top:12px;">+ 첫 직원 등록하기</button>` : '관리자 모드에서 직원을 등록해주세요.'}
+  </div>`;
+}
+
+/* ---- 탭 2: 오늘 근태 ---- */
+function renderToday(){
+  const dateInput = `<input type="date" id="todayDate" value="${state.todayDate||todayStr()}">`;
+  const date = state.todayDate||todayStr();
+  if(state.employees.length===0) return emptyEmployees();
+  const rows = state.employees.filter(e=>e.active).map(emp=>{
+    const rec = getAttendance(emp.id, date);
+    const st = computeStatus(emp, date, rec);
+    const mins = workMinutes(rec);
+    const place = (rec && rec.work_store) || emp.store || '-';
+    return `<tr>
+      <td><b>${emp.name}</b></td>
+      <td>${place}</td>
+      <td>${fmtTime(rec&&rec.clock_in)}</td>
+      <td>${fmtTime(rec&&rec.clock_out)}</td>
+      <td>${mins!=null? fmtHM(mins): '-'}</td>
+      <td><span class="badge ${st.cls}">${st.label}</span></td>
+      ${state.isAdmin? `<td><button class="btn secondary" data-edit-emp="${emp.id}" data-edit-date="${date}">수정</button></td>`:''}
+    </tr>`;
+  }).join('');
+  return `<div class="card">
+    <div class="row" style="justify-content:space-between; margin-bottom:14px;">
+      <h2 style="margin:0;">날짜별 근태 현황</h2>
+      <div class="row">
+        ${dateInput}
+        ${state.isAdmin? `<button class="btn secondary" id="addRecordBtn2">+ 근무기록 추가</button>`:''}
+      </div>
+    </div>
+    <table><thead><tr><th>직원</th><th>근무 지점</th><th>출근</th><th>퇴근</th><th>근무시간</th><th>상태</th>${state.isAdmin?'<th></th>':''}</tr></thead>
+    <tbody>${rows}</tbody></table>
+  </div>`;
+}
+
+/* ---- 탭 3: 기간별 근무시간 ---- */
+function renderHours(){
+  const empOptions = ['<option value="all">전체 직원</option>'].concat(
+    state.employees.map(e=>`<option value="${e.id}" ${state.hoursRange.empId===e.id?'selected':''}>${e.name}</option>`)
+  ).join('');
+
+  const days = enumerateDates(state.hoursRange.start, state.hoursRange.end);
+  const empList = state.hoursRange.empId==='all' ? state.employees.filter(e=>e.active) : state.employees.filter(e=>e.id===state.hoursRange.empId);
+
+  let totalMin=0, totalDays=0, lateCount=0, offCount=0;
+  const perDay = {};
+  days.forEach(d=>perDay[d]=0);
+
+  const perEmpRows = empList.map(emp=>{
+    let empMin=0, empDays=0, empLate=0, empOff=0;
+    days.forEach(d=>{
+      const rec = getAttendance(emp.id, d);
+      if(rec && rec.is_off){ empOff++; return; }
+      const m = workMinutes(rec);
+      if(m!=null){ empMin+=m; empDays++; perDay[d]+=m;
+        const st = computeStatus(emp, d, rec);
+        if(st.cls==='late') empLate++;
+      }
+    });
+    totalMin+=empMin; totalDays+=empDays; lateCount+=empLate; offCount+=empOff;
+    return `<tr><td><b>${emp.name}</b></td><td>${empDays}일</td><td>${fmtHM(empMin)}</td><td>${empLate}회</td><td>${empOff}일</td></tr>`;
+  }).join('');
+
+  const maxDay = Math.max(1, ...Object.values(perDay));
+  const bars = days.map(d=>{
+    const h = Math.max(2, Math.round((perDay[d]/maxDay)*110));
+    const dayNum = d.slice(8,10);
+    return `<div class="bar-col"><div class="bar" style="height:${h}px" title="${d}: ${fmtHM(perDay[d])}"></div><div class="bar-label">${dayNum}</div></div>`;
+  }).join('');
+
+  return `<div class="card" style="margin-bottom:14px;">
+    <div class="row" style="justify-content:space-between; flex-wrap:wrap; gap:10px;">
+      <h2 style="margin:0;">기간별 근무시간</h2>
+      <div class="row">
+        <input type="date" id="rangeStart" value="${state.hoursRange.start}">
+        <span style="color:var(--gray-500)">~</span>
+        <input type="date" id="rangeEnd" value="${state.hoursRange.end}">
+        <select id="rangeEmp">${empOptions}</select>
+        <button class="btn" id="rangeGo">조회</button>
+      </div>
+    </div>
+  </div>
+  <div class="stat-row">
+    <div class="stat-tile"><div class="label">총 근무시간</div><div class="value">${fmtHM(totalMin)}</div></div>
+    <div class="stat-tile"><div class="label">총 근무일수</div><div class="value">${totalDays}일</div></div>
+    <div class="stat-tile"><div class="label">지각 횟수</div><div class="value">${lateCount}회</div></div>
+    <div class="stat-tile"><div class="label">휴무일수</div><div class="value">${offCount}일</div></div>
+  </div>
+  <div class="card" style="margin-bottom:14px;">
+    <h2>일별 근무시간 합계</h2>
+    <div class="bars">${bars}</div>
+  </div>
+  <div class="card">
+    <h2>직원별 요약</h2>
+    <table><thead><tr><th>직원</th><th>근무일수</th><th>총 근무시간</th><th>지각</th><th>휴무</th></tr></thead>
+    <tbody>${perEmpRows || '<tr><td colspan="5" style="color:var(--gray-500)">데이터 없음</td></tr>'}</tbody></table>
+  </div>`;
+}
+
+function enumerateDates(start,end){
+  const out=[]; let d=new Date(start); const endD=new Date(end);
+  while(d<=endD){ out.push(fmtDate(d)); d.setDate(d.getDate()+1); }
+  return out;
+}
+
+/* ---- 탭 4: 월간 스케줄 ---- */
+function renderSchedule(){
+  const [y,m] = state.scheduleMonth.split('-').map(Number);
+  const first = new Date(y, m-1, 1);
+  const startDow = first.getDay();
+  const daysInMonth = new Date(y, m, 0).getDate();
+  const cells = [];
+  for(let i=0;i<startDow;i++) cells.push(`<div class="cal-cell empty"></div>`);
+  for(let day=1; day<=daysInMonth; day++){
+    const dateStr = `${y}-${String(m).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+    const chips = state.employees.filter(e=>e.active).map(emp=>{
+      const rec = getAttendance(emp.id, dateStr);
+      const cls = dayState(rec);
+      const label = emp.name;
+      const adminCls = state.isAdmin ? 'admin':'';
+      return `<span class="chip ${cls} ${adminCls}" data-chip-emp="${emp.id}" data-chip-date="${dateStr}" title="${emp.name} — 클릭하면 미정/근무/휴무 순으로 전환">${label}</span>`;
+    }).join('');
+    const adminDateCls = state.isAdmin ? 'admin':'';
+    cells.push(`<div class="cal-cell"><div class="cal-date ${adminDateCls}" data-day-date="${dateStr}" title="${state.isAdmin? '클릭해서 이 날 여러 직원 근무/휴무 한번에 지정':''}">${day}</div>${chips}</div>`);
+  }
+  return `<div class="card">
+    <div class="row" style="justify-content:space-between;">
+      <h2 style="margin:0;">${y}년 ${m}월 스케줄</h2>
+      <div class="row">
+        <button class="btn secondary" id="prevMonth">‹ 이전달</button>
+        <button class="btn secondary" id="nextMonth">다음달 ›</button>
+      </div>
+    </div>
+    <div class="cal">${DOW.map(d=>`<div class="dow">${d}</div>`).join('')}${cells.join('')}</div>
+    <p style="font-size:11px; color:var(--gray-500); margin-top:10px;">
+      <span class="chip work" style="display:inline-block;">근무</span>
+      <span class="chip off" style="display:inline-block;">휴무</span>
+      <span class="chip plan" style="display:inline-block;">예정(미정)</span>
+      ${state.isAdmin? ' — 날짜 숫자를 클릭하면 그날 휴무 대상을 여러 명 한번에 지정할 수 있고, 이름을 클릭하면 그 직원만 빠르게 전환할 수 있어요.' : ''}
+    </p>
+  </div>`;
+}
+
+/* ============ 이벤트 바인딩 ============ */
+function bindTabEvents(){
+  // 출퇴근
+  document.querySelectorAll('[data-act]').forEach(btn=>{
+    btn.onclick = () => handleClock(btn.dataset.emp, btn.dataset.act);
+  });
+  document.getElementById('addEmpBtn') && (document.getElementById('addEmpBtn').onclick = openEmployeeModal);
+  document.getElementById('addRecordBtn') && (document.getElementById('addRecordBtn').onclick = ()=> openAddRecordModal());
+  document.getElementById('addRecordBtn2') && (document.getElementById('addRecordBtn2').onclick = ()=> openAddRecordModal(null, state.todayDate||todayStr()));
+  document.querySelectorAll('[data-quick-edit]').forEach(btn=>{
+    btn.onclick = ()=> openEditModal(btn.dataset.quickEdit, btn.dataset.quickDate);
+  });
+  document.querySelectorAll('[data-edit-info]').forEach(btn=>{
+    btn.onclick = ()=> openEmployeeModal(btn.dataset.editInfo);
+  });
+
+  // 오늘 근태
+  const td = document.getElementById('todayDate');
+  if(td) td.onchange = async ()=>{ state.todayDate = td.value; await loadAttendanceRange(td.value, td.value); renderMain(); };
+  document.querySelectorAll('[data-edit-emp]').forEach(btn=>{
+    btn.onclick = ()=> openEditModal(btn.dataset.editEmp, btn.dataset.editDate);
+  });
+
+  // 기간별
+  const go = document.getElementById('rangeGo');
+  if(go) go.onclick = async ()=>{
+    state.hoursRange.start = document.getElementById('rangeStart').value;
+    state.hoursRange.end = document.getElementById('rangeEnd').value;
+    state.hoursRange.empId = document.getElementById('rangeEmp').value;
+    await loadAttendanceRange(state.hoursRange.start, state.hoursRange.end);
+    renderMain();
+  };
+
+  // 스케줄
+  const prev = document.getElementById('prevMonth'), next = document.getElementById('nextMonth');
+  if(prev) prev.onclick = ()=> shiftMonth(-1);
+  if(next) next.onclick = ()=> shiftMonth(1);
+  document.querySelectorAll('[data-chip-emp]').forEach(chip=>{
+    if(!state.isAdmin) return;
+    chip.onclick = ()=> toggleScheduleDay(chip.dataset.chipEmp, chip.dataset.chipDate);
+  });
+  document.querySelectorAll('[data-day-date]').forEach(el=>{
+    if(!state.isAdmin) return;
+    el.onclick = ()=> openDayOffModal(el.dataset.dayDate);
+  });
+}
+
+async function shiftMonth(delta){
+  const [y,m] = state.scheduleMonth.split('-').map(Number);
+  const d = new Date(y, m-1+delta, 1);
+  state.scheduleMonth = monthKey(d);
+  const start = fmtDate(new Date(d.getFullYear(), d.getMonth(), 1));
+  const end = fmtDate(new Date(d.getFullYear(), d.getMonth()+1, 0));
+  await loadAttendanceRange(start, end);
+  renderMain();
+}
+
+async function toggleScheduleDay(empId, date){
+  // 이름 칩을 클릭할 때마다 미정 → 근무 → 휴무 → 미정 순서로 빠르게 전환
+  const rec = getAttendance(empId, date);
+  const cur = dayState(rec);
+  const next = cur==='plan' ? 'work' : cur==='work' ? 'off' : 'plan';
+  if(next==='off'){
+    await upsertAttendance({ employee_id: empId, work_date: date, is_off:true, planned_work:false, off_reason:'사장님 지정 휴무' });
+  } else if(next==='work'){
+    await upsertAttendance({ employee_id: empId, work_date: date, is_off:false, planned_work:true });
+  } else {
+    await upsertAttendance({ employee_id: empId, work_date: date, is_off:false, planned_work:false });
+  }
+  renderMain();
+}
+
+/* ---- 출퇴근 처리 (PIN 확인 후 기록) ---- */
+function handleClock(empId, action){
+  const emp = state.employees.find(e=>e.id===empId);
+  if(!emp) return;
+  if(emp.pin){ openPinModal(empId, action); return; }
+  doClock(empId, action);
+}
+
+async function doClock(empId, action){
+  const today = todayStr();
+  const now = new Date().toISOString();
+  if(action==='in'){
+    await upsertAttendance({ employee_id: empId, work_date: today, clock_in: now, is_off:false });
+  } else {
+    const rec = getAttendance(empId, today);
+    await upsertAttendance({ employee_id: empId, work_date: today, clock_in: rec?rec.clock_in:now, clock_out: now });
+  }
+  renderMain();
+}
+
+function openPinModal(empId, action){
+  state.pinModal = { empId, action }; state.pinBuffer='';
+  renderPinModal();
+}
+function renderPinModal(){
+  const emp = state.employees.find(e=>e.id===state.pinModal.empId);
+  const dots = [0,1,2,3].map(i=>`<span class="${i<state.pinBuffer.length?'filled':''}"></span>`).join('');
+  const pad = [1,2,3,4,5,6,7,8,9,'',0,'←'].map(n=>`<button data-pin="${n}">${n}</button>`).join('');
+  const html = `<div class="modal-bg" id="pinBg"><div class="modal">
+    <h3>${emp.name}님 PIN 입력</h3>
+    <div class="pin-dots">${dots}</div>
+    <div class="pin-pad">${pad}</div>
+    <div class="modal-actions"><button class="btn secondary" id="pinCancel">취소</button></div>
+  </div></div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+  document.querySelectorAll('[data-pin]').forEach(b=>b.onclick=()=>{
+    const v = b.dataset.pin;
+    if(v==='←'){ state.pinBuffer = state.pinBuffer.slice(0,-1); }
+    else if(v!==''){ if(state.pinBuffer.length<4) state.pinBuffer += v; }
+    if(state.pinBuffer.length===4){
+      const emp = state.employees.find(e=>e.id===state.pinModal.empId);
+      document.getElementById('pinBg').remove();
+      if(emp.pin === state.pinBuffer){ doClock(state.pinModal.empId, state.pinModal.action); }
+      else alert('PIN이 일치하지 않아요. 다시 시도해주세요.');
+      state.pinModal=null;
+    } else {
+      document.getElementById('pinBg').remove();
+      renderPinModal();
+    }
+  });
+  document.getElementById('pinCancel').onclick = ()=>{ document.getElementById('pinBg').remove(); state.pinModal=null; };
+}
+
+/* ---- 관리자 모드 ---- */
+function onAdminToggle(){
+  if(state.isAdmin){ state.isAdmin=false; render(); return; }
+  const html = `<div class="modal-bg" id="adminBg"><div class="modal">
+    <h3>관리자 비밀번호</h3>
+    <div class="row"><div style="flex:1;"><input id="admin_pw" type="password" placeholder="비밀번호 입력" autocomplete="off"></div></div>
+    <div class="modal-actions">
+      <button class="btn secondary" id="adminCancel">취소</button>
+      <button class="btn" id="adminOk">확인</button>
+    </div>
+  </div></div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+  const input = document.getElementById('admin_pw');
+  input.focus();
+  const submit = ()=>{
+    const pw = input.value;
+    document.getElementById('adminBg').remove();
+    if(pw===ADMIN_PASSWORD){ state.isAdmin=true; render(); }
+    else if(pw) alert('비밀번호가 틀렸어요.');
+  };
+  document.getElementById('adminOk').onclick = submit;
+  document.getElementById('adminCancel').onclick = ()=> document.getElementById('adminBg').remove();
+  input.addEventListener('keydown', e=>{ if(e.key==='Enter') submit(); });
+}
+
+/* ---- 직원 추가/수정 모달 (empId를 넘기면 수정 모드) ---- */
+function openEmployeeModal(empId){
+  const editing = !!empId;
+  const emp = editing ? state.employees.find(e=>e.id===empId) : null;
+  const html = `<div class="modal-bg" id="empBg"><div class="modal">
+    <h3>${editing? '직원 정보 수정' : '직원 추가'}</h3>
+    <div class="row"><div style="flex:1;"><label>이름</label><input id="f_name" type="text" placeholder="예: 김OO" value="${emp? emp.name:''}"></div></div>
+    <div class="row"><div style="flex:1;"><label>근무 지점명 (수기 입력)</label><input id="f_store" type="text" placeholder="예: 송도 트리플" value="${emp? (emp.store||'') : '송도 트리플'}"></div></div>
+    <div class="row"><div style="flex:1;"><label>소속/비고</label><input id="f_aff" type="text" placeholder="예: 송도 트리플 가맹 교육생" value="${emp? (emp.affiliation||''):''}"></div></div>
+    <div class="row"><div style="flex:1;"><label>교육자 (트레이너, 수기 입력)</label><input id="f_trainer" type="text" placeholder="예: 홍길동 매니저" value="${emp? (emp.trainer||''):''}"></div></div>
+    <div class="row">
+      <div style="flex:1;"><label>기준 출근</label><input id="f_start" type="time" value="${emp? (emp.standard_start||'10:30') : '10:30'}"></div>
+      <div style="flex:1;"><label>기준 퇴근</label><input id="f_end" type="time" value="${emp? (emp.standard_end||'19:00') : '19:00'}"></div>
+    </div>
+    <div class="row"><div style="flex:1;"><label>PIN (선택, 4자리)</label><input id="f_pin" type="text" maxlength="4" placeholder="비워두면 PIN 없이 체크" value="${emp? (emp.pin||''):''}"></div></div>
+    <div class="modal-actions">
+      <button class="btn secondary" id="empCancel">취소</button>
+      <button class="btn" id="empSave">저장</button>
+    </div>
+  </div></div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+  document.getElementById('empCancel').onclick = ()=> document.getElementById('empBg').remove();
+  document.getElementById('empSave').onclick = async ()=>{
+    const name = document.getElementById('f_name').value.trim();
+    if(!name){ alert('이름을 입력해주세요'); return; }
+    const payload = {
+      name,
+      store: document.getElementById('f_store').value.trim() || '송도 트리플',
+      affiliation: document.getElementById('f_aff').value.trim() || null,
+      trainer: document.getElementById('f_trainer').value.trim() || null,
+      standard_start: document.getElementById('f_start').value || '10:30',
+      standard_end: document.getElementById('f_end').value || '19:00',
+      pin: document.getElementById('f_pin').value.trim() || null
+    };
+    try{
+      if(editing){
+        await db.collection('employees').doc(empId).set(payload, { merge: true });
+      } else {
+        await db.collection('employees').add({ ...payload, active: true, created_at: new Date().toISOString() });
+      }
+    } catch(err){
+      alert('저장 실패: '+err.message); return;
+    }
+    document.getElementById('empBg').remove();
+    await loadEmployees();
+    renderMain();
+  };
+}
+
+function openEditModal(empId, date){
+  const emp = state.employees.find(e=>e.id===empId);
+  const rec = getAttendance(empId, date) || {};
+  const html = `<div class="modal-bg" id="editBg"><div class="modal">
+    <h3>${emp.name} · ${date} 기록 수정</h3>
+    <div class="row">
+      <div style="flex:1;"><label>출근 시각</label><input id="e_in" type="time" value="${rec.clock_in? fmtTime(rec.clock_in):''}"></div>
+      <div style="flex:1;"><label>퇴근 시각</label><input id="e_out" type="time" value="${rec.clock_out? fmtTime(rec.clock_out):''}"></div>
+    </div>
+    <div class="row"><div style="flex:1;"><label>근무 지점 (수기 입력)</label><input id="e_store" type="text" placeholder="예: 송도 트리플" value="${rec.work_store || emp.store || ''}"></div></div>
+    <div class="row"><div style="flex:1;">
+      <label><input type="checkbox" id="e_off" ${rec.is_off?'checked':''}> 이 날 휴무로 지정</label>
+    </div></div>
+    <div class="row"><div style="flex:1;"><label>메모</label><input id="e_note" type="text" value="${rec.note||''}"></div></div>
+    <div class="modal-actions">
+      <button class="btn secondary" id="editCancel">취소</button>
+      <button class="btn" id="editSave">저장</button>
+    </div>
+  </div></div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+  document.getElementById('editCancel').onclick = ()=> document.getElementById('editBg').remove();
+  document.getElementById('editSave').onclick = async ()=>{
+    const inVal = document.getElementById('e_in').value;
+    const outVal = document.getElementById('e_out').value;
+    const isOff = document.getElementById('e_off').checked;
+    const note = document.getElementById('e_note').value;
+    const workStore = document.getElementById('e_store').value.trim();
+    const toIso = (t)=> t ? new Date(`${date}T${t}:00`).toISOString() : null;
+    await upsertAttendance({
+      employee_id: empId, work_date: date,
+      clock_in: toIso(inVal), clock_out: toIso(outVal),
+      is_off: isOff, note: note||null, work_store: workStore||null
+    });
+    document.getElementById('editBg').remove();
+    renderMain();
+  };
+}
+
+/* ---- 근무기록 추가/수정 (관리자: 직원+날짜를 자유롭게 선택) ---- */
+function openAddRecordModal(presetEmpId, presetDate){
+  if(state.employees.length===0){ alert('먼저 직원을 등록해주세요.'); return; }
+  const activeEmps = state.employees.filter(e=>e.active);
+  const empOptions = activeEmps.map(e=>`<option value="${e.id}" ${presetEmpId===e.id?'selected':''}>${e.name}</option>`).join('');
+  const initDate = presetDate || todayStr();
+  const html = `<div class="modal-bg" id="addRecBg"><div class="modal">
+    <h3>근무 기록 추가/수정</h3>
+    <div class="row"><div style="flex:1;"><label>직원</label><select id="ar_emp">${empOptions}</select></div></div>
+    <div class="row"><div style="flex:1;"><label>날짜</label><input id="ar_date" type="date" value="${initDate}"></div></div>
+    <div class="row">
+      <div style="flex:1;"><label>출근 시각</label><input id="ar_in" type="time"></div>
+      <div style="flex:1;"><label>퇴근 시각</label><input id="ar_out" type="time"></div>
+    </div>
+    <div class="row"><div style="flex:1;"><label>근무 지점 (수기 입력)</label><input id="ar_store" type="text" placeholder="예: 송도 트리플"></div></div>
+    <div class="row"><div style="flex:1;">
+      <label><input type="checkbox" id="ar_off"> 이 날 휴무로 지정</label>
+    </div></div>
+    <div class="row"><div style="flex:1;"><label>메모</label><input id="ar_note" type="text" placeholder="예: 대타 근무"></div></div>
+    <small class="hint" id="ar_hint"></small>
+    <div class="modal-actions">
+      <button class="btn secondary" id="arCancel">취소</button>
+      <button class="btn" id="arSave">저장</button>
+    </div>
+  </div></div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+
+  const fillExisting = ()=>{
+    const empId = document.getElementById('ar_emp').value;
+    const date = document.getElementById('ar_date').value;
+    const rec = getAttendance(empId, date);
+    const emp = state.employees.find(e=>e.id===empId);
+    document.getElementById('ar_in').value = rec && rec.clock_in? fmtTime(rec.clock_in) : '';
+    document.getElementById('ar_out').value = rec && rec.clock_out? fmtTime(rec.clock_out) : '';
+    document.getElementById('ar_off').checked = !!(rec && rec.is_off);
+    document.getElementById('ar_note').value = (rec && rec.note) || '';
+    document.getElementById('ar_store').value = (rec && rec.work_store) || (emp && emp.store) || '';
+    document.getElementById('ar_hint').textContent = rec? '이미 기록이 있어서 불러왔어요. 저장하면 덮어씁니다.' : '해당 직원·날짜에 기존 기록이 없어요. 새로 추가돼요.';
+  };
+  document.getElementById('ar_emp').onchange = fillExisting;
+  document.getElementById('ar_date').onchange = fillExisting;
+  fillExisting();
+
+  document.getElementById('arCancel').onclick = ()=> document.getElementById('addRecBg').remove();
+  document.getElementById('arSave').onclick = async ()=>{
+    const empId = document.getElementById('ar_emp').value;
+    const date = document.getElementById('ar_date').value;
+    if(!date){ alert('날짜를 선택해주세요.'); return; }
+    const inVal = document.getElementById('ar_in').value;
+    const outVal = document.getElementById('ar_out').value;
+    const isOff = document.getElementById('ar_off').checked;
+    const note = document.getElementById('ar_note').value;
+    const workStore = document.getElementById('ar_store').value.trim();
+    const toIso = (t)=> t ? new Date(`${date}T${t}:00`).toISOString() : null;
+    await upsertAttendance({
+      employee_id: empId, work_date: date,
+      clock_in: toIso(inVal), clock_out: toIso(outVal),
+      is_off: isOff, note: note||null, work_store: workStore||null
+    });
+    document.getElementById('addRecBg').remove();
+    renderMain();
+  };
+}
+
+/* ---- 근태 상태 3단계 판정: plan(미정) / work(근무) / off(휴무) ---- */
+function dayState(rec){
+  if(rec && rec.is_off) return 'off';
+  if(rec && (rec.clock_in || rec.planned_work)) return 'work';
+  return 'plan';
+}
+
+function openDayOffModal(date){
+  const activeEmps = state.employees.filter(e=>e.active);
+  const rows = activeEmps.map(emp=>{
+    const rec = getAttendance(emp.id, date);
+    const cur = dayState(rec);
+    return `<div class="dayoff-row">
+      <div class="dayoff-name">${emp.name}</div>
+      <div class="seg" data-emp="${emp.id}">
+        <button type="button" data-val="plan" class="${cur==='plan'?'sel':''}">미정</button>
+        <button type="button" data-val="work" class="${cur==='work'?'sel work':''}">근무</button>
+        <button type="button" data-val="off" class="${cur==='off'?'sel off':''}">휴무</button>
+      </div>
+    </div>`;
+  }).join('');
+  const html = `<div class="modal-bg" id="dayOffBg"><div class="modal">
+    <h3>${date} 근무/휴무 지정</h3>
+    <p style="font-size:12px; color:var(--gray-500); margin:0 0 6px;">직원별로 미정·근무·휴무 중 하나를 선택하고 저장하세요.</p>
+    <div class="check-list">${rows || '<p style="font-size:13px;color:var(--gray-500)">등록된 직원이 없어요.</p>'}</div>
+    <div class="modal-actions">
+      <button class="btn secondary" id="dayOffCancel">취소</button>
+      <button class="btn" id="dayOffSave">저장</button>
+    </div>
+  </div></div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+
+  document.querySelectorAll('.seg[data-emp] button').forEach(btn=>{
+    btn.onclick = ()=>{
+      const group = btn.closest('.seg');
+      group.querySelectorAll('button').forEach(b=>b.classList.remove('sel','work','off'));
+      btn.classList.add('sel');
+      if(btn.dataset.val==='work') btn.classList.add('work');
+      if(btn.dataset.val==='off') btn.classList.add('off');
+    };
+  });
+
+  document.getElementById('dayOffCancel').onclick = ()=> document.getElementById('dayOffBg').remove();
+  document.getElementById('dayOffSave').onclick = async ()=>{
+    const groups = Array.from(document.querySelectorAll('.seg[data-emp]'));
+    for(const g of groups){
+      const empId = g.dataset.emp;
+      const selBtn = g.querySelector('button.sel');
+      const val = selBtn ? selBtn.dataset.val : 'plan';
+      const rec = getAttendance(empId, date);
+      if(dayState(rec) === val) continue;
+      if(val==='off'){
+        await upsertAttendance({ employee_id: empId, work_date: date, is_off:true, planned_work:false, off_reason:'사장님 지정 휴무' });
+      } else if(val==='work'){
+        await upsertAttendance({ employee_id: empId, work_date: date, is_off:false, planned_work:true });
+      } else {
+        await upsertAttendance({ employee_id: empId, work_date: date, is_off:false, planned_work:false });
+      }
+    }
+    document.getElementById('dayOffBg').remove();
+    renderMain();
+  };
+}
+
+/* ============ 실시간 구독 (Firestore onSnapshot) ============ */
+function subscribeRealtime(){
+  db.collection('attendance').onSnapshot(snap=>{
+    snap.docChanges().forEach(change=>{
+      const r = { id: change.doc.id, ...change.doc.data() };
+      if(change.type==='removed') delete state.attendance[keyOf(r.employee_id, r.work_date)];
+      else state.attendance[keyOf(r.employee_id, r.work_date)] = r;
+    });
+    renderMain();
+  }, err=>console.error('attendance 구독 오류', err));
+
+  db.collection('employees').onSnapshot(async ()=>{
+    await loadEmployees(); renderMain();
+  }, err=>console.error('employees 구독 오류', err));
+}
+
+/* ============ 시작 ============ */
+async function boot(){
+  render();
+  if(!isConfigured()) return;
+  try{
+    if(!window.firebase || !window.firebase.initializeApp){
+      throw new Error('Firebase 라이브러리를 불러오지 못했어요 (인터넷 연결을 확인해주세요)');
+    }
+    firebase.initializeApp(FIREBASE_CONFIG);
+    db = firebase.firestore();
+    await loadEmployees();
+    const start = state.hoursRange.start, end = fmtDate(new Date(new Date().getFullYear(), new Date().getMonth()+1, 0));
+    await loadAttendanceRange(start < todayStr() ? start : todayStr(), end);
+    render();
+    subscribeRealtime();
+    setInterval(()=>{ if(state.tab==='clock') renderMain(); }, 60000); // 1분마다 시간 갱신
+  } catch(err){
+    console.error(err);
+    const main = document.getElementById('main');
+    if(main) main.innerHTML = `<div class="card empty-state">⚠️ 연결에 실패했어요.<br><small class="hint">${err.message}</small><br><br>FIREBASE_CONFIG 값과 인터넷 연결을 확인해주세요.</div>`;
+  }
+}
+boot();
+</script>
+</body>
+</html>
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>위베이프 출퇴근·근태관리</title>
+<script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-firestore-compat.js"></script>
+<style>
+  :root{
+    --yellow:#FFCC00;
+    --yellow-dark:#E6B800;
+    --black:#141414;
+    --white:#ffffff;
+    --gray-50:#f7f7f5;
+    --gray-100:#eeeeec;
+    --gray-200:#e2e2de;
+    --gray-300:#d0d0cb;
+    --gray-500:#8a8a86;
+    --gray-700:#54544f;
+    --red:#e2453c;
+    --red-bg:#fdeceb;
+    --green:#2f9e57;
+    --green-bg:#eaf7ee;
+    --blue:#2f6fed;
+    --blue-bg:#eaf0fe;
+    --radius:14px;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+    background:var(--gray-50); color:var(--black); -webkit-font-smoothing:antialiased;
+  }
+  header{
+    background:var(--black); color:var(--white); padding:16px 20px;
+    display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; z-index:20;
+  }
+  header .title{display:flex; align-items:center; gap:10px; font-weight:800; font-size:16px;}
+  header .title .dot{width:10px;height:10px;border-radius:50%;background:var(--yellow);}
+  header .sub{font-size:11px; color:var(--gray-300); font-weight:400; margin-top:2px;}
+  #adminBtn{
+    background:var(--yellow); color:var(--black); border:none; padding:8px 14px; border-radius:999px;
+    font-weight:700; font-size:12px; cursor:pointer;
+  }
+  #adminBtn.on{background:var(--white); box-shadow:0 0 0 2px var(--yellow) inset;}
+  nav{
+    display:flex; gap:6px; padding:10px 14px; background:var(--white); position:sticky; top:56px; z-index:19;
+    border-bottom:1px solid var(--gray-200); overflow-x:auto;
+  }
+  nav button{
+    border:none; background:var(--gray-100); color:var(--gray-700); padding:9px 14px; border-radius:999px;
+    font-size:13px; font-weight:700; cursor:pointer; white-space:nowrap;
+  }
+  nav button.active{background:var(--black); color:var(--yellow);}
+  main{padding:16px; max-width:960px; margin:0 auto; padding-bottom:60px;}
+  .card{background:var(--white); border-radius:var(--radius); padding:16px; box-shadow:0 1px 2px rgba(0,0,0,.04); border:1px solid var(--gray-200);}
+  .grid{display:grid; gap:12px;}
+  .emp-grid{grid-template-columns:repeat(auto-fill,minmax(220px,1fr));}
+  .emp-card{cursor:pointer; transition:transform .1s;}
+  .emp-card:active{transform:scale(.98);}
+  .emp-name{font-weight:800; font-size:16px;}
+  .emp-meta{font-size:12px; color:var(--gray-500); margin-top:2px;}
+  .badge{display:inline-block; padding:3px 9px; border-radius:999px; font-size:11px; font-weight:700; margin-top:10px;}
+  .badge.off{background:var(--gray-100); color:var(--gray-700);}
+  .badge.before{background:var(--gray-100); color:var(--gray-700);}
+  .badge.working{background:var(--blue-bg); color:var(--blue);}
+  .badge.done{background:var(--green-bg); color:var(--green);}
+  .badge.absent{background:var(--red-bg); color:var(--red);}
+  .badge.late{background:var(--red-bg); color:var(--red);}
+  .times{font-size:12px; color:var(--gray-700); margin-top:8px;}
+  .action-btn{
+    margin-top:12px; width:100%; padding:12px; border:none; border-radius:10px; font-weight:800; font-size:14px; cursor:pointer;
+  }
+  .action-btn.in{background:var(--black); color:var(--yellow);}
+  .action-btn.out{background:var(--yellow); color:var(--black);}
+  .action-btn:disabled{background:var(--gray-200); color:var(--gray-500); cursor:not-allowed;}
+  h2{font-size:15px; margin:0 0 12px;}
+  .row{display:flex; gap:10px; align-items:center; flex-wrap:wrap;}
+  select, input[type=date], input[type=text], input[type=time], input[type=password], input[type=number]{
+    padding:8px 10px; border:1px solid var(--gray-300); border-radius:8px; font-size:13px; background:var(--white);
+  }
+  .btn{padding:8px 14px; border:none; border-radius:8px; font-weight:700; font-size:13px; cursor:pointer; background:var(--black); color:var(--yellow);}
+  .btn.secondary{background:var(--gray-100); color:var(--black);}
+  table{width:100%; border-collapse:collapse; font-size:13px;}
+  th,td{padding:9px 8px; text-align:left; border-bottom:1px solid var(--gray-100); white-space:nowrap;}
+  th{color:var(--gray-500); font-weight:700; font-size:11px; text-transform:uppercase;}
+  .stat-row{display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; margin-bottom:16px;}
+  .stat-tile{background:var(--white); border:1px solid var(--gray-200); border-radius:var(--radius); padding:14px;}
+  .stat-tile .label{font-size:11px; color:var(--gray-500); font-weight:700;}
+  .stat-tile .value{font-size:22px; font-weight:800; margin-top:4px;}
+  .bars{display:flex; align-items:flex-end; gap:6px; height:120px; margin-top:14px;}
+  .bar-col{flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%;}
+  .bar{width:100%; background:var(--yellow); border-radius:4px 4px 0 0; min-height:2px; position:relative;}
+  .bar:hover{background:var(--yellow-dark);}
+  .bar-label{font-size:9px; color:var(--gray-500); margin-top:4px;}
+  .cal{display:grid; grid-template-columns:repeat(7,1fr); gap:6px; margin-top:10px;}
+  .cal .dow{font-size:11px; color:var(--gray-500); text-align:center; font-weight:700; padding-bottom:4px;}
+  .cal-cell{min-height:78px; background:var(--white); border:1px solid var(--gray-200); border-radius:8px; padding:5px; font-size:11px;}
+  .cal-cell.empty{background:transparent; border:none;}
+  .cal-date{font-weight:700; font-size:11px; color:var(--gray-700);}
+  .chip{display:block; margin-top:3px; padding:2px 5px; border-radius:5px; font-size:10px; font-weight:700; cursor:default;}
+  .chip.work{background:var(--green-bg); color:var(--green);}
+  .chip.plan{background:var(--gray-100); color:var(--gray-700); border:1px dashed var(--gray-300);}
+  .chip.off{background:var(--red-bg); color:var(--red);}
+  .chip.admin{cursor:pointer;}
   .modal-bg{position:fixed; inset:0; background:rgba(0,0,0,.45); display:flex; align-items:center; justify-content:center; z-index:50; padding:16px;}
   .modal{background:var(--white); border-radius:var(--radius); padding:20px; width:100%; max-width:360px;}
   .modal h3{margin:0 0 14px; font-size:15px;}
